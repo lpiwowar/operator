@@ -25,11 +25,12 @@ metadata:
       ]
     capabilities: Basic Install
     categories: AI/Machine Learning
-    createdAt: "2026-02-18T16:58:24Z"
+    createdAt: "2026-02-19T09:36:07Z"
     description: AI-powered virtual assistant for Red Hat OpenStack Services on OpenShift
     features.operators.openshift.io/cnf: "false"
     features.operators.openshift.io/cni: "false"
     features.operators.openshift.io/csi: "false"
+    features.operators.openshift.io/disconnected: "true"
     features.operators.openshift.io/fips-compliant: "false"
     features.operators.openshift.io/proxy-aware: "false"
     features.operators.openshift.io/tls-profiles: "false"
