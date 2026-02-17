@@ -58,8 +58,8 @@ spec:
     name: Lucas Alvares Gomes
   - email: geguileo@redhat.com
     name: Gorka Eguileor
-  - email: Lukas Piwowarski
-    name: lpiwowar@redhat.com
+  - email: lpiwowar@redhat.com
+    name: Lukas Piwowarski
   maturity: alpha
   minKubeVersion: 1.31.0
   provider:
