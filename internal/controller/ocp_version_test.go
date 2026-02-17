@@ -69,17 +69,17 @@ func TestGetOCPVectorDBPath(t *testing.T) {
 		{
 			name:     "Version 4.16",
 			version:  "4.16",
-			expected: "/rag/ocp_vector_db/ocp-4.16",
+			expected: "/rag/ocp_vector_db/ocp_4.16",
 		},
 		{
 			name:     "Version 4.18",
 			version:  "4.18",
-			expected: "/rag/ocp_vector_db/ocp-4.18",
+			expected: "/rag/ocp_vector_db/ocp_4.18",
 		},
 		{
 			name:     "Latest version",
 			version:  "latest",
-			expected: "/rag/ocp_vector_db/ocp-latest",
+			expected: "/rag/ocp_vector_db/ocp_latest",
 		},
 	}
 
@@ -313,8 +313,8 @@ func TestBuildRAGConfigs(t *testing.T) {
 		if !ok {
 			t.Fatalf("Expected indexPath to be string, got %T", ocpConfig["indexPath"])
 		}
-		if ocpPath != "/rag/ocp_vector_db/ocp-4.16" {
-			t.Errorf("OCP indexPath = %s, want /rag/ocp_vector_db/ocp-4.16", ocpPath)
+		if ocpPath != "/rag/ocp_vector_db/ocp_4.16" {
+			t.Errorf("OCP indexPath = %s, want /rag/ocp_vector_db/ocp_4.16", ocpPath)
 		}
 
 		ocpIndexID, ok := ocpConfig["indexID"].(string)
@@ -354,8 +354,8 @@ func TestBuildRAGConfigs(t *testing.T) {
 		if !ok {
 			t.Fatalf("Expected indexPath to be string, got %T", ocpConfig["indexPath"])
 		}
-		if ocpPath != "/rag/ocp_vector_db/ocp-latest" {
-			t.Errorf("OCP indexPath = %s, want /rag/ocp_vector_db/ocp-latest", ocpPath)
+		if ocpPath != "/rag/ocp_vector_db/ocp_latest" {
+			t.Errorf("OCP indexPath = %s, want /rag/ocp_vector_db/ocp_latest", ocpPath)
 		}
 
 		ocpIndexID, ok := ocpConfig["indexID"].(string)
