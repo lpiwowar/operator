@@ -70,7 +70,7 @@ jobs:
 
       - name: Generate bundle
         run: |
-          make bundle IMG=$OPERATOR_IMAGE
+          make bundle IMG=$OPERATOR_IMAGE USE_IMAGE_DIGESTS=true
           make bundle-build BUNDLE_IMG=$BUNDLE_IMAGE
           docker tag $BUNDLE_IMAGE $BUNDLE_IMAGE_LATEST
           make bundle-push BUNDLE_IMG=$BUNDLE_IMAGE
