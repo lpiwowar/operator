@@ -113,11 +113,11 @@ func GetOCPIndexName(version string) string {
 }
 
 // GetOCPVectorDBPath returns the full path to OCP vector DB for given version
-// Example: "4.16" -> "/rag/ocp_vector_db/ocp-4.16"
+// Example: "4.16" -> "/rag/ocp_vector_db/ocp_4.16"
 //
-//	"latest" -> "/rag/ocp_vector_db/ocp-latest"
+//	"latest" -> "/rag/ocp_vector_db/ocp_latest"
 func GetOCPVectorDBPath(version string) string {
-	return fmt.Sprintf("%s-%s", OpenStackLightspeedOCPVectorDBPath, version)
+	return fmt.Sprintf("%s_%s", OpenStackLightspeedOCPVectorDBPath, version)
 }
 
 // IsSupportedOCPVersion checks if the version is explicitly supported in RAG DB
