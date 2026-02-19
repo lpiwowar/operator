@@ -127,6 +127,10 @@ type OpenStackLightspeedStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.conditions[0].status",description="Status"
 // +kubebuilder:printcolumn:name="Message",type="string",JSONPath=".status.conditions[0].message",description="Message"
+// +operator-sdk:csv:customresourcedefinitions:resources={{OLSConfig,v1alpha1,cluster}}
+// +operator-sdk:csv:customresourcedefinitions:resources={{Subscription,v1alpha1}}
+// +operator-sdk:csv:customresourcedefinitions:resources={{ClusterServiceVersion,v1alpha1}}
+// +operator-sdk:csv:customresourcedefinitions:resources={{InstallPlan,v1alpha}}
 
 // OpenStackLightspeed is the Schema for the openstacklightspeeds API
 type OpenStackLightspeed struct {

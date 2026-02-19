@@ -25,7 +25,7 @@ metadata:
       ]
     capabilities: Basic Install
     categories: AI/Machine Learning
-    createdAt: "2026-02-19T09:36:07Z"
+    createdAt: "2026-02-19T12:53:35Z"
     description: AI-powered virtual assistant for Red Hat OpenStack Services on OpenShift
     features.operators.openshift.io/cnf: "false"
     features.operators.openshift.io/cni: "false"
@@ -52,6 +52,19 @@ spec:
       displayName: Open Stack Lightspeed
       kind: OpenStackLightspeed
       name: openstacklightspeeds.lightspeed.openstack.org
+      resources:
+      - kind: ClusterServiceVersion
+        name: ""
+        version: v1alpha1
+      - kind: InstallPlan
+        name: ""
+        version: v1alpha
+      - kind: Subscription
+        name: ""
+        version: v1alpha1
+      - kind: OLSConfig
+        name: cluster
+        version: v1alpha1
       specDescriptors:
       - description: Type of the provider serving the LLM
         displayName: Provider Type
