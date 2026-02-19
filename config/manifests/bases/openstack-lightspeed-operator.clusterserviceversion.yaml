@@ -29,6 +29,19 @@ spec:
       displayName: Open Stack Lightspeed
       kind: OpenStackLightspeed
       name: openstacklightspeeds.lightspeed.openstack.org
+      resources:
+      - kind: ClusterServiceVersion
+        name: ""
+        version: v1alpha1
+      - kind: InstallPlan
+        name: ""
+        version: v1alpha
+      - kind: Subscription
+        name: ""
+        version: v1alpha1
+      - kind: OLSConfig
+        name: cluster
+        version: v1alpha1
       specDescriptors:
       - description: Type of the provider serving the LLM
         displayName: Provider Type
