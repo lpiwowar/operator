@@ -9,11 +9,20 @@ require (
 	github.com/openstack-k8s-operators/lib-common/modules/common v0.6.1-0.20260205083029-d03e9df035ef
 	github.com/openstack-k8s-operators/openstack-operator/api v0.0.0-20260225121511-d9a49c8a2f0a
 	github.com/operator-framework/api v0.37.0
+	k8s.io/api v0.34.2
 	k8s.io/apimachinery v0.34.3
 	k8s.io/client-go v0.34.2
 	k8s.io/utils v0.0.0-20250820121507-0af2bda4dd1d
 	sigs.k8s.io/controller-runtime v0.22.4
 )
+
+// Pin controller-runtime to v0.19.7 so openstack-k8s-operators API deps (which use
+// webhook.Defaulter/Validator) resolve. v0.20+ removed those deprecated types.
+replace sigs.k8s.io/controller-runtime => sigs.k8s.io/controller-runtime v0.19.7
+
+// Use OpenStack's rabbitmq-cluster-operator fork so infra-operator/apis (RabbitMqSpecCore) gets
+// RabbitmqClusterSpecCore and Override. Upstream rabbitmq/cluster-operator/v2 does not define SpecCore.
+replace github.com/rabbitmq/cluster-operator/v2 => github.com/openstack-k8s-operators/rabbitmq-cluster-operator/v2 v2.6.1-0.20250929174222-a0d328fa4dec
 
 require (
 	cel.dev/expr v0.24.0 // indirect
@@ -36,7 +45,6 @@ require (
 	github.com/go-openapi/swag v0.23.1 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/google/btree v1.1.3 // indirect
 	github.com/google/cel-go v0.26.1 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
@@ -119,7 +127,6 @@ require (
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/api v0.34.2 // indirect
 	k8s.io/apiextensions-apiserver v0.34.2 // indirect
 	k8s.io/apiserver v0.34.2 // indirect
 	k8s.io/component-base v0.34.2 // indirect

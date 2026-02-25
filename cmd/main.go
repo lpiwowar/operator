@@ -39,6 +39,7 @@ import (
 
 	operatorsv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
 
+	openstackv1 "github.com/openstack-k8s-operators/openstack-operator/api/core/v1beta1"
 	apiv1beta1 "github.com/openstack-lightspeed/operator/api/v1beta1"
 	"github.com/openstack-lightspeed/operator/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -55,6 +56,8 @@ func init() {
 	utilruntime.Must(operatorsv1alpha1.AddToScheme(scheme))
 
 	utilruntime.Must(apiv1beta1.AddToScheme(scheme))
+
+	utilruntime.Must(openstackv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

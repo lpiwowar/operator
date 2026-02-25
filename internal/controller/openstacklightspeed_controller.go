@@ -64,6 +64,7 @@ func (r *OpenStackLightspeedReconciler) GetLogger(ctx context.Context) logr.Logg
 // +kubebuilder:rbac:groups=operators.coreos.com,resources=subscriptions,namespace=openshift-lightspeed,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=operators.coreos.com,resources=installplans,namespace=openshift-lightspeed,verbs=get;list;watch;update;delete
 // +kubebuilder:rbac:groups=config.openshift.io,resources=clusterversions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.openstack.org,resources=openstackcontrolplanes,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -142,6 +143,11 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	instance.Status.Conditions.Init(&cl)
 	instance.Status.ObservedGeneration = instance.Generation
+
+	result, err := r.ReconcileMCPServer(ctx, helper, instance)
+	if err != nil {
+		return result, err
+	}
 
 	// OCP Version Detection and Resolution - must be done early so status field is always set
 	r.resolveOCPVersion(ctx, helper, instance)
@@ -258,6 +264,7 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 	return ctrl.Result{}, nil
 }
 
+// TODO: Move resolveOCPVersion to a separate function
 // resolveOCPVersion detects and resolves the OCP version to use for RAG configuration.
 // Returns the active OCP version to use (or empty string if OCP RAG is disabled).
 func (r *OpenStackLightspeedReconciler) resolveOCPVersion(

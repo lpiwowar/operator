@@ -287,6 +287,26 @@ func PatchOLSConfig(
 		return fmt.Errorf("cannot add finalizer")
 	}
 
+	mcpServerConfig := map[string]interface{}{
+		"name": "openstack-lightspeed-mcp",
+		"streamableHTTP": map[string]interface{}{
+			"url": "http://mcp-server-service:8080/openstack/",
+		},
+	}
+	// mcpServerConfig := map[string]interface{}{
+	// 	"name": "openstack-lightspeed-mcp",
+	// 	"url":  "http://mcp-server-service:8080/openstack/",
+	// }
+	err = uns.SetNestedSlice(olsConfig.Object, []interface{}{mcpServerConfig}, "spec", "mcpServers")
+	if err != nil {
+		return err
+	}
+	// Add featureGates to enable "MCPServe"
+	err = uns.SetNestedSlice(olsConfig.Object, []interface{}{"MCPServer"}, "spec", "featureGates")
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
