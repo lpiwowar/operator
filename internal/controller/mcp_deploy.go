@@ -35,9 +35,11 @@ import (
 )
 
 const (
-	openstackPodsNamespace   string = "openstack"
-	openstackConfigMapName   string = "openstack-config"
-	openstackSecretName      string = "openstack-config-secret"
+	openstackPodsNamespace     string = "openstack"
+	openstackConfigMapName     string = "openstack-config"
+	openstackSecretName        string = "openstack-config-secret"
+	combinedCaBundleSecretName string = "combined-ca-bundle"
+	mcpConfigMapName           string = "mcp-config"
 )
 
 func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
@@ -64,6 +66,9 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 	}
 
 	if err = r.copySecretsConfigMaps(ctx, client, instance); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err = r.createConfig(ctx, client, instance); err != nil {
 		return ctrl.Result{}, err
 	}
 	// deploy MCP server
@@ -135,6 +140,30 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 							},
 						},
 					},
+					{
+						Name: combinedCaBundleSecretName,
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: combinedCaBundleSecretName,
+								Items: []corev1.KeyToPath{{
+									Key:  "tls-ca-bundle.pem",
+									Path: "tls-ca-bundle.pem",
+								}},
+							},
+						},
+					},
+					{
+						Name: mcpConfigMapName,
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: mcpConfigMapName},
+								Items: []corev1.KeyToPath{{
+									Key:  "config.yaml",
+									Path: "config.yaml",
+								}},
+							},
+						},
+					},
 				},
 				Containers: []corev1.Container{{
 					Name:  "mcp-server-container",
@@ -142,6 +171,8 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: openstackSecretName, MountPath: "/app/secure.yaml", SubPath: "secure.yaml"},
 						{Name: openstackConfigMapName, MountPath: "/app/clouds.yaml", SubPath: "clouds.yaml"},
+						{Name: combinedCaBundleSecretName, MountPath: "/app/tls-ca-bundle.pem", SubPath: "tls-ca-bundle.pem", ReadOnly: true},
+						{Name: mcpConfigMapName, MountPath: "/app/config.yaml", SubPath: "config.yaml"},
 					},
 				}},
 			},
@@ -155,8 +186,8 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 	return ctrl.Result{}, nil
 }
 
-// copySecretsConfigMaps copies the openstack-config ConfigMap and openstack-config-secret
-// Secret from the openstack namespace into instance.Namespace so the MCP server can use them.
+// copySecretsConfigMaps copies the openstack-config ConfigMap, openstack-config-secret,
+// and combined-ca-bundle Secret from the openstack namespace into instance.Namespace so the MCP server can use them.
 func (r *OpenStackLightspeedReconciler) copySecretsConfigMaps(
 	ctx context.Context,
 	client crclient.Client,
@@ -228,5 +259,88 @@ func (r *OpenStackLightspeedReconciler) copySecretsConfigMaps(
 		return err
 	}
 
+	// Copy Secret combined-ca-bundle
+	srcCaBundle := &corev1.Secret{}
+	if err := client.Get(ctx, types.NamespacedName{Namespace: openstackPodsNamespace, Name: combinedCaBundleSecretName}, srcCaBundle); err != nil {
+		if k8s_errors.IsNotFound(err) {
+			return fmt.Errorf("secret %s/%s not found: %w", openstackPodsNamespace, combinedCaBundleSecretName, err)
+		}
+		return err
+	}
+	destCaBundle := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      combinedCaBundleSecretName,
+			Namespace: instance.Namespace,
+		},
+	}
+	_, err = controllerutil.CreateOrUpdate(ctx, client, destCaBundle, func() error {
+		destCaBundle.Data = make(map[string][]byte)
+		for k, v := range srcCaBundle.Data {
+			destCaBundle.Data[k] = v
+		}
+		destCaBundle.Type = srcCaBundle.Type
+		destCaBundle.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// createConfig creates the mcp-config ConfigMap with config.yaml key in instance.Namespace.
+func (r *OpenStackLightspeedReconciler) createConfig(
+	ctx context.Context,
+	client crclient.Client,
+	instance *apiv1beta1.OpenStackLightspeed,
+) error {
+	ownerRef := metav1.OwnerReference{
+		APIVersion:         instance.APIVersion,
+		Kind:               instance.Kind,
+		Name:               instance.GetName(),
+		UID:                instance.GetUID(),
+		Controller:         ptr.To(true),
+		BlockOwnerDeletion: ptr.To(true),
+	}
+
+	mcpConfigYAML := `ip: 0.0.0.0
+port: 8080
+debug: true
+workers: 1
+processes_pool_size: 10
+
+openstack:
+  allow_write: false
+  ca_cert: ./tls-ca-bundle.pem
+  insecure: false
+
+openshift:
+  allow_write: false
+  insecure: false
+
+mcp_transport_security:
+    # token: supersecret
+    enable_dns_rebinding_protection: false
+    allowed_hosts:
+      - "*:*"
+    allowed_origins:
+      - "http://*:*"
+`
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      mcpConfigMapName,
+			Namespace: instance.Namespace,
+		},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, client, cm, func() error {
+		if cm.Data == nil {
+			cm.Data = make(map[string]string)
+		}
+		cm.Data["config.yaml"] = mcpConfigYAML
+		cm.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
+		return nil
+	})
+	return err
 }

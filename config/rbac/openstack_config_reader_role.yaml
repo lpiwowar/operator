@@ -23,6 +23,7 @@ rules:
   - secrets
   resourceNames:
   - openstack-config-secret
+  - combined-ca-bundle
   verbs:
   - get
   - list
