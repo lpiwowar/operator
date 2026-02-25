@@ -8,6 +8,8 @@ resources:
 - role.yaml
 - role_binding.yaml
 - namespace_role_binding.yaml
+- openstack_config_reader_role.yaml
+- openstack_config_reader_role_binding.yaml
 - leader_election_role.yaml
 - leader_election_role_binding.yaml
 # The following RBAC configurations are used to protect

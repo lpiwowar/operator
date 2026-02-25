@@ -17,21 +17,27 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	common_helper "github.com/openstack-k8s-operators/lib-common/modules/common/helper"
 	openstackv1 "github.com/openstack-k8s-operators/openstack-operator/api/core/v1beta1"
 	apiv1beta1 "github.com/openstack-lightspeed/operator/api/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 const (
-	openstackPodsNamespace string = "openstack"
+	openstackPodsNamespace   string = "openstack"
+	openstackConfigMapName   string = "openstack-config"
+	openstackSecretName      string = "openstack-config-secret"
 )
 
 func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
@@ -57,11 +63,10 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 		return ctrl.Result{}, nil
 	}
 
-	err := copySecretsConfigMaps()
-	if err != nil {
-
+	if err = r.copySecretsConfigMaps(ctx, client, instance); err != nil {
+		return ctrl.Result{}, err
 	}
-	// deployes MCP server
+	// deploy MCP server
 
 	// Create or update the Service for the MCP server
 	mcpService := &corev1.Service{
@@ -105,9 +110,39 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 				Labels: map[string]string{"app": "mcp-server"},
 			},
 			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: openstackSecretName,
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: openstackSecretName,
+								Items: []corev1.KeyToPath{{
+									Key:  "secure.yaml",
+									Path: "secure.yaml",
+								}},
+							},
+						},
+					},
+					{
+						Name: openstackConfigMapName,
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: openstackConfigMapName},
+								Items: []corev1.KeyToPath{{
+									Key:  "clouds.yaml",
+									Path: "clouds.yaml",
+								}},
+							},
+						},
+					},
+				},
 				Containers: []corev1.Container{{
 					Name:  "mcp-server-container",
 					Image: "quay.io/openstack-lightspeed/rhos-mcps:latest",
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: openstackSecretName, MountPath: "/app/secure.yaml", SubPath: "secure.yaml"},
+						{Name: openstackConfigMapName, MountPath: "/app/clouds.yaml", SubPath: "clouds.yaml"},
+					},
 				}},
 			},
 		}
@@ -118,4 +153,80 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// copySecretsConfigMaps copies the openstack-config ConfigMap and openstack-config-secret
+// Secret from the openstack namespace into instance.Namespace so the MCP server can use them.
+func (r *OpenStackLightspeedReconciler) copySecretsConfigMaps(
+	ctx context.Context,
+	client crclient.Client,
+	instance *apiv1beta1.OpenStackLightspeed,
+) error {
+	ownerRef := metav1.OwnerReference{
+		APIVersion:         instance.APIVersion,
+		Kind:               instance.Kind,
+		Name:               instance.GetName(),
+		UID:                instance.GetUID(),
+		Controller:         ptr.To(true),
+		BlockOwnerDeletion: ptr.To(true),
+	}
+
+	// Copy ConfigMap openstack-config
+	srcCM := &corev1.ConfigMap{}
+	if err := client.Get(ctx, types.NamespacedName{Namespace: openstackPodsNamespace, Name: openstackConfigMapName}, srcCM); err != nil {
+		if k8s_errors.IsNotFound(err) {
+			return fmt.Errorf("configmap %s/%s not found: %w", openstackPodsNamespace, openstackConfigMapName, err)
+		}
+		return err
+	}
+	destCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      openstackConfigMapName,
+			Namespace: instance.Namespace,
+		},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, client, destCM, func() error {
+		destCM.Data = make(map[string]string)
+		for k, v := range srcCM.Data {
+			destCM.Data[k] = v
+		}
+		destCM.BinaryData = make(map[string][]byte)
+		for k, v := range srcCM.BinaryData {
+			destCM.BinaryData[k] = v
+		}
+		destCM.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Copy Secret openstack-config-secret
+	srcSecret := &corev1.Secret{}
+	if err := client.Get(ctx, types.NamespacedName{Namespace: openstackPodsNamespace, Name: openstackSecretName}, srcSecret); err != nil {
+		if k8s_errors.IsNotFound(err) {
+			return fmt.Errorf("secret %s/%s not found: %w", openstackPodsNamespace, openstackSecretName, err)
+		}
+		return err
+	}
+	destSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      openstackSecretName,
+			Namespace: instance.Namespace,
+		},
+	}
+	_, err = controllerutil.CreateOrUpdate(ctx, client, destSecret, func() error {
+		destSecret.Data = make(map[string][]byte)
+		for k, v := range srcSecret.Data {
+			destSecret.Data[k] = v
+		}
+		destSecret.Type = srcSecret.Type
+		destSecret.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
