@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -32,7 +33,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -44,8 +47,11 @@ import (
 // OpenStackLightspeedReconciler reconciles a OpenStackLightspeed object
 type OpenStackLightspeedReconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	Kclient kubernetes.Interface
+	Scheme      *runtime.Scheme
+	Kclient     kubernetes.Interface
+	Cache       cache.Cache           // Required for source.Kind() in dynamic watches
+	controller  controller.Controller // Reference for dynamic watches
+	WatchedCRDs sync.Map              // Track watches (key=GVKString, value=*WatchInfo)
 }
 
 // GetLogger returns a logger object with a prefix of "controller.name" and additional controller context fields
@@ -65,13 +71,14 @@ func (r *OpenStackLightspeedReconciler) GetLogger(ctx context.Context) logr.Logg
 // +kubebuilder:rbac:groups=operators.coreos.com,resources=installplans,namespace=openshift-lightspeed,verbs=get;list;watch;update;delete
 // +kubebuilder:rbac:groups=config.openshift.io,resources=clusterversions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core.openstack.org,resources=openstackcontrolplanes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.18.4/pkg/reconcile
-func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, e error) {
 	Log := r.GetLogger(ctx)
 	Log.Info("OpenStackLightspeed Reconciling")
 
@@ -127,6 +134,17 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 			return
 		}
 
+		r.WatchedCRDs.Range(func(_, value any) bool {
+			watchInfo, ok := value.(*WatchInfo)
+			if !ok {
+				return true
+			}
+			if watchInfo.Enabled != nil && !watchInfo.Enabled.Load() {
+				result = ctrl.Result{RequeueAfter: 30 * time.Second}
+				return false // stop iteration
+			}
+			return true
+		})
 	}()
 
 	cl := condition.CreateList(
@@ -140,9 +158,9 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 	instance.Status.Conditions.Init(&cl)
 	instance.Status.ObservedGeneration = instance.Generation
 
-	result, err := r.ReconcileMCPServer(ctx, helper, instance)
+	_, err = r.ReconcileMCPServer(ctx, helper, instance)
 	if err != nil {
-		return result, err
+		return ctrl.Result{}, err
 	}
 
 	// OCP Version Detection and Resolution - must be done early so status field is always set
@@ -302,7 +320,8 @@ func (r *OpenStackLightspeedReconciler) SetupWithManager(mgr ctrl.Manager) error
 		Kind:    "ClusterVersion",
 	})
 
-	return ctrl.NewControllerManagedBy(mgr).
+	// Use Build() instead of Complete() to capture controller reference for dynamic watches
+	c, err := ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1beta1.OpenStackLightspeed{}).
 		Owns(&operatorsv1alpha1.ClusterServiceVersion{}).
 		Owns(&operatorsv1alpha1.Subscription{}).
@@ -316,7 +335,15 @@ func (r *OpenStackLightspeedReconciler) SetupWithManager(mgr ctrl.Manager) error
 			handler.EnqueueRequestsFromMapFunc(r.NotifyAllOpenStackLightspeeds),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		).
-		Complete(r)
+		Build(r)
+
+	if err != nil {
+		return err
+	}
+
+	// Store controller reference for dynamic watches
+	r.controller = c
+	return nil
 }
 
 // NotifyAllOpenStackLightspeeds returns a list of reconcile requests for all OpenStackLightspeed objects.

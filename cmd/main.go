@@ -28,6 +28,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -39,6 +40,7 @@ import (
 
 	operatorsv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	openstackv1 "github.com/openstack-k8s-operators/openstack-operator/api/core/v1beta1"
 	apiv1beta1 "github.com/openstack-lightspeed/operator/api/v1beta1"
 	"github.com/openstack-lightspeed/operator/internal/controller"
@@ -58,6 +60,8 @@ func init() {
 	utilruntime.Must(apiv1beta1.AddToScheme(scheme))
 
 	utilruntime.Must(openstackv1.AddToScheme(scheme))
+
+	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -163,12 +167,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create kubernetes client for direct API access
+	kclient, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to create kubernetes client")
+		os.Exit(1)
+	}
+
 	// Defaults for OpenStackLightspeed
 	apiv1beta1.SetupDefaults()
 
 	if err = (&controller.OpenStackLightspeedReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Kclient: kclient,
+		Cache:   mgr.GetCache(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OpenStackLightspeed")
 		os.Exit(1)

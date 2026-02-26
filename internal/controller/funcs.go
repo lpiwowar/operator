@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"sync/atomic"
 
 	apiv1beta1 "github.com/openstack-lightspeed/operator/api/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,11 +30,19 @@ import (
 	_ "embed"
 
 	common_helper "github.com/openstack-k8s-operators/lib-common/modules/common/helper"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	uns "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 const (
@@ -56,6 +65,13 @@ const (
 	// OLSConfigName - OLS forbids other name for OLSConfig instance than OLSConfigName
 	OLSConfigName = "cluster"
 )
+
+// WatchInfo holds metadata about a dynamic watch
+type WatchInfo struct {
+	GVK     schema.GroupVersionKind // The resource type being watched
+	Enabled *atomic.Bool            // Whether this watch is currently active
+	CRDName string                  // e.g., "openstackcontrolplanes.core.openstack.org"
+}
 
 // systemPrompt - system prompt tailored to the needs of OpenStack Lightspeed. It overwrites the default OLS prompt.
 //
@@ -381,4 +397,138 @@ func OLSConfigPing(ctx context.Context, helper *common_helper.Helper) error {
 		return err
 	}
 	return nil
+}
+
+// getCRDName constructs the CRD name from a GVK
+// Format: <plural>.<group>
+// Uses meta.UnsafeGuessKindToResource for proper pluralization
+func getCRDName(gvk schema.GroupVersionKind) string {
+	resource, _ := meta.UnsafeGuessKindToResource(gvk)
+	if resource.Group == "" {
+		return resource.Resource
+	}
+	return fmt.Sprintf("%s.%s", resource.Resource, resource.Group)
+}
+
+// createFilteredHandler creates an event handler that checks if the watch is enabled
+// Events are only processed if the enabled flag is true
+func (r *OpenStackLightspeedReconciler) createFilteredHandler(
+	gvkString string,
+	enabled *atomic.Bool,
+) handler.TypedEventHandler[*uns.Unstructured, ctrl.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj *uns.Unstructured) []ctrl.Request {
+		// Check if this watch is still enabled
+		if !enabled.Load() {
+			// Watch is disabled, don't process events
+			return nil
+		}
+
+		// Watch is enabled, process normally
+		return r.NotifyAllOpenStackLightspeeds(ctx, obj)
+	})
+}
+
+// IsCRDAvailable checks if a CRD exists and is in "Established" state (ready for use)
+// Returns (true, nil) if the CRD exists and is established
+// Returns (false, nil) if the CRD doesn't exist
+// Returns (false, error) for other errors
+func (r *OpenStackLightspeedReconciler) IsCRDAvailable(
+	ctx context.Context,
+	gvk schema.GroupVersionKind,
+) (bool, error) {
+	crdName := getCRDName(gvk)
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+
+	err := r.Get(ctx, client.ObjectKey{Name: crdName}, crd)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	// Check if CRD is established
+	for _, condition := range crd.Status.Conditions {
+		if condition.Type == apiextensionsv1.Established && condition.Status == apiextensionsv1.ConditionTrue {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// RegisterDynamicCRDWatch registers a dynamic watch for a CRD, or re-enables if disabled
+// This can be called during reconciliation when you need to start watching a new resource type
+func (r *OpenStackLightspeedReconciler) RegisterDynamicCRDWatch(
+	ctx context.Context,
+	gvk schema.GroupVersionKind,
+) error {
+	Log := log.FromContext(ctx)
+	gvkString := gvk.String()
+
+	// Check if already watching
+	if existing, ok := r.WatchedCRDs.Load(gvkString); ok {
+		watchInfo := existing.(*WatchInfo)
+		if watchInfo.Enabled.Load() {
+			Log.Info("Watch already enabled", "gvk", gvkString)
+			return nil
+		}
+		// Re-enable if it was disabled
+		watchInfo.Enabled.Store(true)
+		Log.Info("Re-enabled watch", "gvk", gvkString)
+		return nil
+	}
+
+	// Verify the CRD exists before setting up the watch
+	crdName := getCRDName(gvk)
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	err := r.Get(ctx, client.ObjectKey{Name: crdName}, crd)
+	if err != nil {
+		return fmt.Errorf("CRD %s not found: %w", crdName, err)
+	}
+
+	// Create watch info
+	enabled := &atomic.Bool{}
+	enabled.Store(true)
+
+	watchInfo := &WatchInfo{
+		GVK:     gvk,
+		Enabled: enabled,
+		CRDName: crdName,
+	}
+
+	// Set up the watch with a filtered handler
+	u := &uns.Unstructured{}
+	u.SetGroupVersionKind(gvk)
+
+	err = r.controller.Watch(
+		source.Kind(
+			r.Cache,
+			u,
+			r.createFilteredHandler(gvkString, enabled),
+			predicate.TypedResourceVersionChangedPredicate[*uns.Unstructured]{},
+		),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set up watch for %s: %w", gvkString, err)
+	}
+
+	// Store the watch info
+	r.WatchedCRDs.Store(gvkString, watchInfo)
+
+	Log.Info("Dynamic watch enabled", "gvk", gvkString, "crd", crdName)
+	return nil
+}
+
+// UnregisterDynamicCRDWatch disables a watch (doesn't remove it, just stops processing events)
+// This is idempotent - calling it on a non-existent or already-disabled watch is safe
+func (r *OpenStackLightspeedReconciler) UnregisterDynamicCRDWatch(
+	gvk schema.GroupVersionKind,
+) {
+	gvkString := gvk.String()
+
+	if value, ok := r.WatchedCRDs.Load(gvkString); ok {
+		watchInfo := value.(*WatchInfo)
+		watchInfo.Enabled.Store(false)
+	}
 }
