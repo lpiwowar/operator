@@ -60,6 +60,11 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 		return ctrl.Result{}, err
 	}
 
+	if len(ocpList.Items) == 0 {
+		r.GetLogger(ctx).Info("No OpenStackControlPlane found!")
+		return ctrl.Result{}, nil
+	}
+
 	cond := ocpList.Items[0].Status.Conditions.Get(openstackv1.OpenStackControlPlaneClientReadyCondition)
 	if cond == nil || cond.Status != "True" {
 		return ctrl.Result{}, nil
