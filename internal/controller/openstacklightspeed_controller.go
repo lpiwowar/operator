@@ -158,6 +158,29 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 	instance.Status.Conditions.Init(&cl)
 	instance.Status.ObservedGeneration = instance.Generation
 
+	// Check if OpenStackControlPlane CRD is available and manage watch
+	oscpGVK := schema.GroupVersionKind{
+		Group:   "core.openstack.org",
+		Version: "v1beta1",
+		Kind:    "OpenStackControlPlane",
+	}
+
+	available, err := r.IsCRDAvailable(ctx, oscpGVK)
+	if err != nil {
+		Log.Error(err, "Failed to check OpenStackControlPlane CRD availability")
+	} else if available {
+		// CRD exists - register watch
+		if err := r.RegisterDynamicCRDWatch(ctx, oscpGVK); err != nil {
+			Log.Error(err, "Failed to register watch for OpenStackControlPlane")
+		} else {
+			Log.V(1).Info("OpenStackControlPlane CRD watch registered")
+		}
+	} else {
+		// CRD doesn't exist - unregister watch if it was previously registered
+		r.UnregisterDynamicCRDWatch(oscpGVK)
+		Log.V(1).Info("OpenStackControlPlane CRD not available, watch disabled")
+	}
+
 	_, err = r.ReconcileMCPServer(ctx, helper, instance)
 	if err != nil {
 		return ctrl.Result{}, err
