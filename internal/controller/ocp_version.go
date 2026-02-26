@@ -23,7 +23,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/openstack-k8s-operators/lib-common/modules/common/condition"
 	common_helper "github.com/openstack-k8s-operators/lib-common/modules/common/helper"
+	apiv1beta1 "github.com/openstack-lightspeed/operator/api/v1beta1"
 	uns "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -151,4 +153,93 @@ func ResolveOCPVersion(detectedVersion, overrideVersion string, enableOCPRAG boo
 
 	// Fallback to latest for unsupported versions
 	return OCPVersionLatest, true, nil
+}
+
+// TODO: Move resolveOCPVersion to a separate function
+// resolveOCPVersion detects and resolves the OCP version to use for RAG configuration.
+// Returns the active OCP version to use (or empty string if OCP RAG is disabled).
+func (r *OpenStackLightspeedReconciler) resolveOCPVersion(
+	ctx context.Context,
+	helper *common_helper.Helper,
+	instance *apiv1beta1.OpenStackLightspeed,
+) string {
+	Log := helper.GetLogger()
+
+	// If OCP RAG is disabled, mark condition as True with "disabled" message
+	if !instance.Spec.EnableOCPRAG {
+		instance.Status.Conditions.MarkTrue(
+			apiv1beta1.OCPRAGCondition,
+			apiv1beta1.OCPRAGDisabledMessage,
+		)
+		instance.Status.ActiveOCPRAGVersion = ""
+		return ""
+	}
+
+	// Step 1: Detect cluster version
+	detectedVersion, err := DetectOCPVersion(ctx, helper)
+
+	if err != nil {
+		Log.Info("Failed to detect OCP version, disabling OCP RAG", "error", err)
+		cond := condition.FalseCondition(
+			apiv1beta1.OCPRAGCondition,
+			condition.ErrorReason,
+			condition.SeverityError,
+			apiv1beta1.OCPRAGDetectionFailedMessage,
+		)
+		cond.Message = fmt.Sprintf("%s: %s", apiv1beta1.OCPRAGDetectionFailedMessage, err.Error())
+		instance.Status.Conditions.Set(cond)
+		instance.Status.ActiveOCPRAGVersion = ""
+		return ""
+	}
+
+	Log.Info("Detected OCP cluster version", "version", detectedVersion)
+
+	// Step 2: Resolve which version to use (with override and fallback)
+	activeVersion, isFallback, err := ResolveOCPVersion(
+		detectedVersion,
+		instance.Spec.OCPRAGVersionOverride,
+		instance.Spec.EnableOCPRAG,
+	)
+
+	if err != nil {
+		// Invalid override
+		Log.Error(err, "Invalid OCP version configuration")
+		cond := condition.FalseCondition(
+			apiv1beta1.OCPRAGCondition,
+			condition.ErrorReason,
+			condition.SeverityError,
+			apiv1beta1.OCPRAGOverrideInvalidMessage,
+		)
+		cond.Message = fmt.Sprintf("%s: %s", apiv1beta1.OCPRAGOverrideInvalidMessage, err.Error())
+		instance.Status.Conditions.Set(cond)
+		instance.Status.ActiveOCPRAGVersion = ""
+		return ""
+	}
+
+	// Step 3: Update status and conditions based on resolution
+	instance.Status.ActiveOCPRAGVersion = activeVersion
+
+	if isFallback {
+		Log.Info("Using 'latest' OCP documentation as fallback",
+			"detectedVersion", detectedVersion,
+			"supportedVersions", SupportedOCPVersions)
+
+		cond := condition.TrueCondition(
+			apiv1beta1.OCPRAGCondition,
+			"Fallback",
+		)
+		cond.Message = fmt.Sprintf(apiv1beta1.OCPRAGVersionFallbackMessage,
+			detectedVersion, SupportedOCPVersions)
+		instance.Status.Conditions.Set(cond)
+	} else {
+		Log.Info("Using OCP RAG documentation", "version", activeVersion)
+		cond := condition.TrueCondition(
+			apiv1beta1.OCPRAGCondition,
+			"Resolved",
+		)
+		cond.Message = fmt.Sprintf(apiv1beta1.OCPRAGVersionResolvedMessage, activeVersion)
+		instance.Status.Conditions.Set(cond)
+	}
+
+	return activeVersion
 }
