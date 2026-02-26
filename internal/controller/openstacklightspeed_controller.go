@@ -134,17 +134,27 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 			return
 		}
 
+		// Evaluate all watches:
+		// - If all are false or there are none, set result.RequeueAfter = 30 * time.Second
+		// - If all are true, leave result as is (no requeue delay)
+		allEnabled := true
+		anyPresent := false
 		r.WatchedCRDs.Range(func(_, value any) bool {
 			watchInfo, ok := value.(*WatchInfo)
 			if !ok {
 				return true
 			}
-			if watchInfo.Enabled != nil && !watchInfo.Enabled.Load() {
-				result = ctrl.Result{RequeueAfter: 30 * time.Second}
-				return false // stop iteration
+			anyPresent = true
+			if watchInfo.Enabled == nil || !watchInfo.Enabled.Load() {
+				allEnabled = false
 			}
 			return true
 		})
+
+		if !anyPresent || !allEnabled {
+			result.RequeueAfter = 30 * time.Second
+			Log.Info("Forced RequeueAfter")
+		}
 	}()
 
 	cl := condition.CreateList(
@@ -181,9 +191,11 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 		Log.V(1).Info("OpenStackControlPlane CRD not available, watch disabled")
 	}
 
-	_, err = r.ReconcileMCPServer(ctx, helper, instance)
-	if err != nil {
-		return ctrl.Result{}, err
+	if available {
+		_, err = r.ReconcileMCPServer(ctx, helper, instance)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// OCP Version Detection and Resolution - must be done early so status field is always set
