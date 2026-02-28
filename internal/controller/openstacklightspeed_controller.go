@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -32,7 +33,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -41,11 +44,18 @@ import (
 	apiv1beta1 "github.com/openstack-lightspeed/operator/api/v1beta1"
 )
 
-// OpenStackLightspeedReconciler reconciles a OpenStackLightspeed object
+// OpenStackLightspeedReconciler is responsible for reconciling OpenStackLightspeed objects.
 type OpenStackLightspeedReconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	Kclient kubernetes.Interface
+	Scheme     *runtime.Scheme
+	Kclient    kubernetes.Interface
+	controller controller.Controller
+
+	// DynamicWatchCRD contains the list of CRDs that the operator should monitor.
+	// These CRDs do not need to exist when the operator starts. Once the operator
+	// detects that a CRD exists, it automatically registers a watch for it using Watch().
+	DynamicWatchCRD map[schema.GroupVersionKind]*atomic.Bool
+	Cache           cache.Cache
 }
 
 // GetLogger returns a logger object with a prefix of "controller.name" and additional controller context fields
@@ -64,6 +74,7 @@ func (r *OpenStackLightspeedReconciler) GetLogger(ctx context.Context) logr.Logg
 // +kubebuilder:rbac:groups=operators.coreos.com,resources=subscriptions,namespace=openshift-lightspeed,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=operators.coreos.com,resources=installplans,namespace=openshift-lightspeed,verbs=get;list;watch;update;delete
 // +kubebuilder:rbac:groups=config.openshift.io,resources=clusterversions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -74,7 +85,7 @@ func (r *OpenStackLightspeedReconciler) GetLogger(ctx context.Context) logr.Logg
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.18.4/pkg/reconcile
-func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, e error) {
 	Log := r.GetLogger(ctx)
 	Log.Info("OpenStackLightspeed Reconciling")
 
@@ -130,6 +141,11 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 			return
 		}
 
+		for _, GVKSeen := range r.DynamicWatchCRD {
+			if !GVKSeen.Load() {
+				result.RequeueAfter = 30 * time.Second
+			}
+		}
 	}()
 
 	cl := condition.CreateList(
@@ -160,6 +176,11 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	if instance.Spec.MaxTokensForResponse == 0 {
 		instance.Spec.MaxTokensForResponse = apiv1beta1.OpenStackLightspeedDefaultValues.MaxTokensForResponse
+	}
+
+	err = r.WatchDynamicCRD(ctx, helper)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Ensure a compatible version of the OpenShift Lightspeed Operator is running in the cluster.
@@ -388,7 +409,7 @@ func (r *OpenStackLightspeedReconciler) SetupWithManager(mgr ctrl.Manager) error
 		Kind:    "ClusterVersion",
 	})
 
-	return ctrl.NewControllerManagedBy(mgr).
+	c, err := ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1beta1.OpenStackLightspeed{}).
 		Owns(&operatorsv1alpha1.ClusterServiceVersion{}).
 		Owns(&operatorsv1alpha1.Subscription{}).
@@ -402,7 +423,13 @@ func (r *OpenStackLightspeedReconciler) SetupWithManager(mgr ctrl.Manager) error
 			handler.EnqueueRequestsFromMapFunc(r.NotifyAllOpenStackLightspeeds),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		).
-		Complete(r)
+		Build(r)
+	if err != nil {
+		return err
+	}
+
+	r.controller = c
+	return nil
 }
 
 // NotifyAllOpenStackLightspeeds returns a list of reconcile requests for all OpenStackLightspeed objects.

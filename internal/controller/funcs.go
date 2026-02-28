@@ -22,17 +22,25 @@ import (
 	"math/rand"
 	"strconv"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	apiv1beta1 "github.com/openstack-lightspeed/operator/api/v1beta1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	_ "embed"
 
 	common_helper "github.com/openstack-k8s-operators/lib-common/modules/common/helper"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	uns "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
@@ -360,5 +368,76 @@ func OLSConfigPing(ctx context.Context, helper *common_helper.Helper) error {
 	if err := helper.GetClient().Update(ctx, &olsConfig); err != nil {
 		return err
 	}
+	return nil
+}
+
+// getCRDName returns the name of the CustomResourceDefinition (CRD) for a given
+// GroupVersionKind (GVK). The CRD name is constructed as "<Kind>s.<Group>" string.
+//
+// TODO(lpiwowar): This approach is a workaround that is sufficient for
+// OpenStackControlPlane use cases and potentially other CRDs. For broader use,
+// we should consider implementing a more robust transformation from GroupVersionKind
+// to CRD name.
+func getCRDName(gvk schema.GroupVersionKind) string {
+	return fmt.Sprintf("%ss.%s", gvk.Kind, gvk.Group)
+}
+
+// IsCRDAvailable checks if a CRD exists and is in "Established" state (ready for use)
+// It returns the following values:
+//   - (true, nil) if the CRD exists and is established
+//   - (false, nil) if the CRD doesn't exist
+//   - (false, error) for other errors
+func isCRDAvailable(ctx context.Context, helper *common_helper.Helper, gvk schema.GroupVersionKind) (bool, error) {
+	crdName := getCRDName(gvk)
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	err := helper.GetClient().Get(ctx, client.ObjectKey{Name: crdName}, crd)
+	if err != nil && errors.IsNotFound(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+
+	for _, condition := range crd.Status.Conditions {
+		if condition.Type == apiextensionsv1.Established && condition.Status == apiextensionsv1.ConditionTrue {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func (r *OpenStackLightspeedReconciler) WatchDynamicCRD(
+	ctx context.Context,
+	helper *common_helper.Helper,
+) error {
+	for gvk, seen := range r.DynamicWatchCRD {
+		crdAvailable, err := isCRDAvailable(ctx, helper, gvk)
+		if err != nil {
+			return err
+		}
+
+		if !crdAvailable {
+			continue
+		}
+
+		u := &uns.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		err = r.controller.Watch(
+			source.Kind(
+				r.Cache,
+				u,
+				handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, o *uns.Unstructured) []ctrl.Request {
+					return r.NotifyAllOpenStackLightspeeds(ctx, o)
+				}),
+				predicate.TypedResourceVersionChangedPredicate[*uns.Unstructured]{},
+			),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to set up watch for %s: %w", getCRDName(gvk), err)
+		}
+
+		seen.Store(true)
+	}
+
 	return nil
 }
