@@ -25,6 +25,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 
 	apiv1beta1 "github.com/openstack-lightspeed/operator/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -441,4 +442,17 @@ func (r *OpenStackLightspeedReconciler) WatchDynamicCRD(
 	}
 
 	return nil
+}
+
+// createOwnerReference creates an owner reference for the given OpenStackLightspeed instance.
+// This ensures proper garbage collection when the instance is deleted.
+func createOwnerReference(instance *apiv1beta1.OpenStackLightspeed) metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion:         instance.APIVersion,
+		Kind:               instance.Kind,
+		Name:               instance.Name,
+		UID:                instance.UID,
+		Controller:         ptr.To(true),
+		BlockOwnerDeletion: ptr.To(true),
+	}
 }
