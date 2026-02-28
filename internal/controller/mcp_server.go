@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	common_cm "github.com/openstack-k8s-operators/lib-common/modules/common/configmap"
+	common_deployment "github.com/openstack-k8s-operators/lib-common/modules/common/deployment"
 	common_helper "github.com/openstack-k8s-operators/lib-common/modules/common/helper"
 	common_secret "github.com/openstack-k8s-operators/lib-common/modules/common/secret"
 	openstackv1 "github.com/openstack-k8s-operators/openstack-operator/api/core/v1beta1"
@@ -68,6 +69,10 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 	var OpenStackControlPlaneInstance openstackv1.OpenStackControlPlane
 	if len(ocpList.Items) == 0 {
 		r.GetLogger(ctx).Info("No OpenStackControlPlane found")
+		instance.Status.Conditions.MarkTrue(
+			apiv1beta1.OpenStackLightspeedMCPServerReadyCondition,
+			apiv1beta1.OpenStackLightspeedMCPServerNoDeployment,
+		)
 		// TODO delete deployment
 		return ctrl.Result{}, nil
 	} else if len(ocpList.Items) > 1 {
@@ -152,6 +157,22 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 
 		return nil
 	})
+
+	latestDeployment := &appsv1.Deployment{}
+	err = r.Client.Get(ctx, crclient.ObjectKey{
+		Name:      deployment.Name,
+		Namespace: deployment.Namespace,
+	}, latestDeployment)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if common_deployment.IsReady(*latestDeployment) {
+		instance.Status.Conditions.MarkTrue(
+			apiv1beta1.OpenStackLightspeedMCPServerReadyCondition,
+			apiv1beta1.OpenStackLightspeedMCPServerDeployed,
+		)
+	}
 
 	return ctrl.Result{}, err
 }

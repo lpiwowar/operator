@@ -157,6 +157,11 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 			condition.InitReason,
 			apiv1beta1.OpenStackLightspeedReadyInitMessage,
 		),
+		condition.UnknownCondition(
+			apiv1beta1.OpenStackLightspeedMCPServerReadyCondition,
+			condition.InitReason,
+			apiv1beta1.OpenStackLightspeedMCPServerInitMessage,
+		),
 	)
 
 	instance.Status.Conditions.Init(&cl)
@@ -188,6 +193,14 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	res, err := r.ReconcileMCPServer(ctx, helper, instance)
 	if err != nil {
+		instance.Status.Conditions.Set(condition.FalseCondition(
+			apiv1beta1.OpenStackLightspeedMCPServerReadyCondition,
+			condition.ErrorReason,
+			condition.SeverityWarning,
+			condition.DeploymentReadyErrorMessage,
+			err.Error(),
+		))
+
 		return res, err
 	}
 
