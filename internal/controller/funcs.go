@@ -104,9 +104,7 @@ func RemoveOLSConfig(
 			return nil
 		}
 
-		if ok := controllerutil.RemoveFinalizer(&olsConfig, helper.GetFinalizer()); !ok {
-			return fmt.Errorf("remove finalizer failed")
-		}
+		controllerutil.RemoveFinalizer(&olsConfig, helper.GetFinalizer())
 
 		return nil
 	})
