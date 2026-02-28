@@ -178,10 +178,19 @@ func main() {
 	// Defaults for OpenStackLightspeed
 	apiv1beta1.SetupDefaults()
 
+	var openStackControlPlane openstackv1beta1.OpenStackControlPlane
+	openStackControlPlaneGVKs, _, _ := scheme.ObjectKinds(&openStackControlPlane)
+
+	dynamicWatchCRDs := make(map[schema.GroupVersionKind]*atomic.Bool)
+	for _, gvk := range openStackControlPlaneGVKs {
+		dynamicWatchCRDs[gvk] = new(atomic.Bool)
+	}
+
 	if err = (&controller.OpenStackLightspeedReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Cache:  mgr.GetCache(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		Cache:           mgr.GetCache(),
+		DynamicWatchCRD: dynamicWatchCRDs,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OpenStackLightspeed")
 		os.Exit(1)

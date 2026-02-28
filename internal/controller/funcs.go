@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -379,7 +380,7 @@ func OLSConfigPing(ctx context.Context, helper *common_helper.Helper) error {
 // we should consider implementing a more robust transformation from GroupVersionKind
 // to CRD name.
 func getCRDName(gvk schema.GroupVersionKind) string {
-	return fmt.Sprintf("%ss.%s", gvk.Kind, gvk.Group)
+	return strings.ToLower(fmt.Sprintf("%ss.%s", gvk.Kind, gvk.Group))
 }
 
 // IsCRDAvailable checks if a CRD exists and is in "Established" state (ready for use)
