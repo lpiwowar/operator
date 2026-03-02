@@ -18,7 +18,6 @@ package controller
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	common_cm "github.com/openstack-k8s-operators/lib-common/modules/common/configmap"
 	common_deployment "github.com/openstack-k8s-operators/lib-common/modules/common/deployment"
@@ -29,14 +28,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -77,7 +73,7 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 
 		deployment := getMCPServerDeployment(instance)
 		err = helper.GetClient().Delete(ctx, &deployment)
-		if err != nil {
+		if err != nil && !k8s_errors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
 
@@ -114,7 +110,7 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 			Namespace: OpenStackControlPlaneInstance.Namespace,
 		},
 	}
-	copySecretClouds, err := copyObjectFromNamespace(ctx, helper, secretToCopy, instance.Namespace, instance)
+	copySecretClouds, err := copyObjectFromNamespace(ctx, helper, secretToCopy, "secret-clouds", instance.Namespace, instance)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -125,7 +121,7 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 			Namespace: OpenStackControlPlaneInstance.Namespace,
 		},
 	}
-	copyConfigMapClouds, err := copyObjectFromNamespace(ctx, helper, configMapToCopy, instance.Namespace, instance)
+	copyConfigMapClouds, err := copyObjectFromNamespace(ctx, helper, configMapToCopy, "config-map-clouds", instance.Namespace, instance)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -137,7 +133,7 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 		},
 	}
 	var copyConfigMapTLSBundle crclient.Object
-	copyConfigMapTLSBundle, err = copyObjectFromNamespace(ctx, helper, secretToCopy, instance.Namespace, instance)
+	copyConfigMapTLSBundle, err = copyObjectFromNamespace(ctx, helper, secretToCopy, "config-map-tls", instance.Namespace, instance)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -159,15 +155,25 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 
 	deployment := getMCPServerDeployment(instance)
 	_, err = controllerutil.CreateOrPatch(ctx, r.Client, &deployment, func() error {
+		if deployment.Spec.Template.Annotations == nil {
+			deployment.Spec.Template.Annotations = make(map[string]string)
+		}
+
 		SecretClouds := getMCPServerDeploymentVolume(deployment, openStackSecretVolume)
 		SecretClouds.VolumeSource.Secret.SecretName = copySecretClouds.GetName()
+		hash, _ := common_secret.Hash(copySecretClouds.(*corev1.Secret))
+		deployment.Spec.Template.Annotations["secret-clouds-hash"] = hash
 
 		ConfigMapClouds := getMCPServerDeploymentVolume(deployment, openStackConfigMapVolume)
 		ConfigMapClouds.VolumeSource.ConfigMap.LocalObjectReference.Name = copyConfigMapClouds.GetName()
+		hash, _ = common_cm.Hash(copyConfigMapClouds.(*corev1.ConfigMap))
+		deployment.Spec.Template.Annotations["config-map-clouds-hash"] = hash
 
 		if copyConfigMapTLSBundle != nil {
 			TLSBundle := getMCPServerDeploymentVolume(deployment, combinedCaBundleSecretVolume)
 			TLSBundle.VolumeSource.Secret.SecretName = copyConfigMapTLSBundle.GetName()
+			hash, _ = common_secret.Hash(copyConfigMapTLSBundle.(*corev1.Secret))
+			deployment.Spec.Template.Annotations["config-map-tls-hash"] = hash
 		}
 
 		// TODO: Do Garbage collecting of cold Config Maps
@@ -190,27 +196,7 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 		)
 	}
 
-	err = garbageCollect(ctx, helper)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
 	return ctrl.Result{}, err
-}
-
-func markResourceForDeletion(ctx context.Context, helper *common_helper.Helper, object crclient.Object) error {
-	currentLabels := object.GetLabels()
-	currentLabels["openstack-lightspeed/garbage-collect"] = "true"
-	object.SetLabels(currentLabels)
-
-	err := helper.GetClient().Update(ctx, object)
-	if err != nil && k8s_errors.IsNotFound(err) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func deleteMCPServer(ctx context.Context, helper common_helper.Helper, instance *apiv1beta1.OpenStackLightspeed) error {
@@ -226,6 +212,7 @@ func copyObjectFromNamespace(
 	ctx context.Context,
 	helper *common_helper.Helper,
 	object crclient.Object,
+	name string,
 	namespace string,
 	instance *apiv1beta1.OpenStackLightspeed,
 ) (crclient.Object, error) {
@@ -244,18 +231,14 @@ func copyObjectFromNamespace(
 	case *corev1.Secret:
 		copySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
 				Namespace: namespace,
 			},
 			Data:       obj.Data,
 			StringData: obj.StringData,
 			Type:       obj.Type,
 		}
-		hash, err := common_secret.Hash(copySecret)
-		if err != nil {
-			return nil, err
-		}
 
-		copySecret.Name = fmt.Sprintf("%s-copy-%s", obj.Name, hash[:hashLength])
 		copySecret.SetOwnerReferences([]metav1.OwnerReference{createOwnerReference(instance)})
 
 		_, err = controllerutil.CreateOrPatch(ctx, helper.GetClient(), copySecret, func() error {
@@ -265,27 +248,18 @@ func copyObjectFromNamespace(
 			return nil, err
 		}
 
-		err = markResourceForDeletion(ctx, helper, copySecret)
-		if err != nil {
-			return nil, err
-		}
-
 		return copySecret, nil
 
 	case *corev1.ConfigMap:
 		copyConfigMap := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
 				Namespace: namespace,
 			},
 			Data:       obj.Data,
 			BinaryData: obj.BinaryData,
 		}
-		hash, err := common_cm.Hash(copyConfigMap)
-		if err != nil {
-			return nil, err
-		}
 
-		copyConfigMap.Name = fmt.Sprintf("%s-copy-%s", obj.Name, hash[:hashLength])
 		copyConfigMap.SetOwnerReferences([]metav1.OwnerReference{createOwnerReference(instance)})
 
 		_, err = controllerutil.CreateOrPatch(ctx, helper.GetClient(), copyConfigMap, func() error {
@@ -295,50 +269,11 @@ func copyObjectFromNamespace(
 			return nil, err
 		}
 
-		err = markResourceForDeletion(ctx, helper, copyConfigMap)
-		if err != nil {
-			return nil, err
-		}
-
 		return copyConfigMap, nil
 
 	default:
 		return nil, errors.New("cannot copy k8s resource (invalid type)")
 	}
-}
-
-func garbageCollect(ctx context.Context, helper *common_helper.Helper) error {
-	resourcesToDelete := []crclient.ObjectList{
-		&corev1.SecretList{},
-		&corev1.ConfigMapList{},
-	}
-
-	selector := labels.SelectorFromSet(map[string]string{"garbage-collect": "true"})
-
-	for _, resourceList := range resourcesToDelete {
-		helper.GetClient().List(ctx, resourceList, &client.ListOptions{
-			LabelSelector: selector,
-		})
-
-		objects, err := meta.ExtractList(resourceList)
-		if err != nil {
-			continue
-		}
-
-		for _, obj := range objects {
-			object, ok := obj.(crclient.Object)
-			if !ok {
-				continue
-			}
-
-			err = helper.GetClient().Delete(ctx, object)
-			if err != nil && !k8s_errors.IsNotFound(err) {
-				return err
-			}
-		}
-	}
-
-	return nil
 }
 
 // createConfig creates the mcp-config ConfigMap with config.yaml key in instance.Namespace.
