@@ -28,11 +28,15 @@ import (
 	apiv1beta1 "github.com/openstack-lightspeed/operator/api/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -66,14 +70,22 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 		return ctrl.Result{}, err
 	}
 
+	// TODO: Create Service Account
 	var OpenStackControlPlaneInstance openstackv1.OpenStackControlPlane
 	if len(ocpList.Items) == 0 {
 		r.GetLogger(ctx).Info("No OpenStackControlPlane found")
+
+		deployment := getMCPServerDeployment(instance)
+		err = helper.GetClient().Delete(ctx, &deployment)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
 		instance.Status.Conditions.MarkTrue(
 			apiv1beta1.OpenStackLightspeedMCPServerReadyCondition,
 			apiv1beta1.OpenStackLightspeedMCPServerNoDeployment,
 		)
-		// TODO delete deployment
+
 		return ctrl.Result{}, nil
 	} else if len(ocpList.Items) > 1 {
 		err = errors.New("more than one OpenStackControlPlane found")
@@ -96,44 +108,47 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 	}
 
 	// TODO: no need for instance passing twice
-	copySecretClouds, err := copyObjectFromNamespace(ctx, helper, &corev1.Secret{
+	secretToCopy := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      *OpenStackControlPlaneInstance.Spec.OpenStackClient.Template.OpenStackConfigSecret,
 			Namespace: OpenStackControlPlaneInstance.Namespace,
 		},
-	}, instance.Namespace, instance)
+	}
+	copySecretClouds, err := copyObjectFromNamespace(ctx, helper, secretToCopy, instance.Namespace, instance)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	copyConfigMapClouds, err := copyObjectFromNamespace(ctx, helper, &corev1.ConfigMap{
+	configMapToCopy := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      *OpenStackControlPlaneInstance.Spec.OpenStackClient.Template.OpenStackConfigMap,
 			Namespace: OpenStackControlPlaneInstance.Namespace,
 		},
-	}, instance.Namespace, instance)
+	}
+	copyConfigMapClouds, err := copyObjectFromNamespace(ctx, helper, configMapToCopy, instance.Namespace, instance)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	var copyConfigMapTLSBundle crclient.Object
-	copyConfigMapTLSBundle, err = copyObjectFromNamespace(ctx, helper, &corev1.Secret{
+	secretToCopy = &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      OpenStackControlPlaneInstance.Status.TLS.CaBundleSecretName,
 			Namespace: OpenStackControlPlaneInstance.Namespace,
 		},
-	}, instance.Namespace, instance)
+	}
+	var copyConfigMapTLSBundle crclient.Object
+	copyConfigMapTLSBundle, err = copyObjectFromNamespace(ctx, helper, secretToCopy, instance.Namespace, instance)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// TODO - Polish this
+	// TODO: Polish this
 	err = r.createConfig(ctx, helper.GetClient(), instance)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// TODO - Copy kubernetes secret
+	// TODO: Copy kubernetes secret
 	svc := getMCPServerService(instance)
 	_, err = controllerutil.CreateOrPatch(ctx, r.Client, &svc, func() error {
 		return nil
@@ -155,6 +170,7 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 			TLSBundle.VolumeSource.Secret.SecretName = copyConfigMapTLSBundle.GetName()
 		}
 
+		// TODO: Do Garbage collecting of cold Config Maps
 		return nil
 	})
 
@@ -174,7 +190,32 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 		)
 	}
 
+	err = garbageCollect(ctx, helper)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, err
+}
+
+func markResourceForDeletion(ctx context.Context, helper *common_helper.Helper, object crclient.Object) error {
+	currentLabels := object.GetLabels()
+	currentLabels["openstack-lightspeed/garbage-collect"] = "true"
+	object.SetLabels(currentLabels)
+
+	err := helper.GetClient().Update(ctx, object)
+	if err != nil && k8s_errors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func deleteMCPServer(ctx context.Context, helper common_helper.Helper, instance *apiv1beta1.OpenStackLightspeed) error {
+	deployment := getMCPServerDeployment(instance)
+	return helper.GetClient().Delete(ctx, &deployment)
 }
 
 // copyObjectFromNamespace copies a resource (supported types: Secret, ConfigMap) from the source
@@ -224,6 +265,11 @@ func copyObjectFromNamespace(
 			return nil, err
 		}
 
+		err = markResourceForDeletion(ctx, helper, copySecret)
+		if err != nil {
+			return nil, err
+		}
+
 		return copySecret, nil
 
 	case *corev1.ConfigMap:
@@ -249,11 +295,50 @@ func copyObjectFromNamespace(
 			return nil, err
 		}
 
+		err = markResourceForDeletion(ctx, helper, copyConfigMap)
+		if err != nil {
+			return nil, err
+		}
+
 		return copyConfigMap, nil
 
 	default:
 		return nil, errors.New("cannot copy k8s resource (invalid type)")
 	}
+}
+
+func garbageCollect(ctx context.Context, helper *common_helper.Helper) error {
+	resourcesToDelete := []crclient.ObjectList{
+		&corev1.SecretList{},
+		&corev1.ConfigMapList{},
+	}
+
+	selector := labels.SelectorFromSet(map[string]string{"garbage-collect": "true"})
+
+	for _, resourceList := range resourcesToDelete {
+		helper.GetClient().List(ctx, resourceList, &client.ListOptions{
+			LabelSelector: selector,
+		})
+
+		objects, err := meta.ExtractList(resourceList)
+		if err != nil {
+			continue
+		}
+
+		for _, obj := range objects {
+			object, ok := obj.(crclient.Object)
+			if !ok {
+				continue
+			}
+
+			err = helper.GetClient().Delete(ctx, object)
+			if err != nil && !k8s_errors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // createConfig creates the mcp-config ConfigMap with config.yaml key in instance.Namespace.
