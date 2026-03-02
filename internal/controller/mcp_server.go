@@ -18,11 +18,14 @@ package controller
 import (
 	"context"
 	"errors"
+	"time"
 
 	common_cm "github.com/openstack-k8s-operators/lib-common/modules/common/configmap"
 	common_deployment "github.com/openstack-k8s-operators/lib-common/modules/common/deployment"
 	common_helper "github.com/openstack-k8s-operators/lib-common/modules/common/helper"
+	common_rolebinding "github.com/openstack-k8s-operators/lib-common/modules/common/rolebinding"
 	common_secret "github.com/openstack-k8s-operators/lib-common/modules/common/secret"
+	common_sa "github.com/openstack-k8s-operators/lib-common/modules/common/serviceaccount"
 	openstackv1 "github.com/openstack-k8s-operators/openstack-operator/api/core/v1beta1"
 	apiv1beta1 "github.com/openstack-lightspeed/operator/api/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -35,6 +38,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	rbacv1 "k8s.io/api/rbac/v1"
+
+	common_role "github.com/openstack-k8s-operators/lib-common/modules/common/role"
 )
 
 const (
@@ -144,13 +151,17 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 		return ctrl.Result{}, err
 	}
 
-	// TODO: Copy kubernetes secret
 	svc := getMCPServerService(instance)
 	_, err = controllerutil.CreateOrPatch(ctx, r.Client, &svc, func() error {
 		return nil
 	})
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+
+	result, err := createMCPServerServiceAccount(ctx, helper, instance)
+	if err != nil {
+		return result, err
 	}
 
 	deployment := getMCPServerDeployment(instance)
@@ -176,7 +187,7 @@ func (r *OpenStackLightspeedReconciler) ReconcileMCPServer(
 			deployment.Spec.Template.Annotations["config-map-tls-hash"] = hash
 		}
 
-		// TODO: Do Garbage collecting of cold Config Maps
+		deployment.Spec.Template.Spec.ServiceAccountName = "mcp-server-service-account"
 		return nil
 	})
 
@@ -443,4 +454,97 @@ func getMCPServerDeployment(
 
 	deployment.SetOwnerReferences([]metav1.OwnerReference{createOwnerReference(instance)})
 	return deployment
+}
+
+func createMCPServerServiceAccount(
+	ctx context.Context,
+	helper *common_helper.Helper,
+	instance *apiv1beta1.OpenStackLightspeed,
+) (ctrl.Result, error) {
+
+	saName := "mcp-server-service-account"
+	namespace := instance.Namespace
+
+	// 1. Create ServiceAccount
+	sa := common_sa.NewServiceAccount(
+		&corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      saName,
+				Namespace: namespace,
+				Annotations: map[string]string{
+					"description": "ServiceAccount for OpenStack Lightspeed MCP server",
+				},
+			},
+		},
+		time.Second*10,
+	)
+
+	result, err := sa.CreateOrPatch(ctx, helper)
+	if err != nil {
+		return result, err
+	}
+	if (result != ctrl.Result{}) {
+		return result, nil
+	}
+
+	// 2. Create Role with permissions
+	rules := []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{""},
+			Resources: []string{"pods", "services", "configmaps", "secrets"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+	}
+
+	rbacRole := common_role.NewRole(
+		&rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      saName + "-role",
+				Namespace: namespace,
+			},
+			Rules: rules,
+		},
+		time.Second*10,
+	)
+
+	result, err = rbacRole.CreateOrPatch(ctx, helper)
+	if err != nil {
+		return result, err
+	}
+	if (result != ctrl.Result{}) {
+		return result, nil
+	}
+
+	// 3. Create RoleBinding to bind Role to ServiceAccount
+	rb := common_rolebinding.NewRoleBinding(
+		&rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      saName + "-rolebinding",
+				Namespace: namespace,
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     saName + "-role",
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      saName,
+					Namespace: namespace,
+				},
+			},
+		},
+		time.Second*10,
+	)
+
+	result, err = rb.CreateOrPatch(ctx, helper)
+	if err != nil {
+		return result, err
+	}
+	if (result != ctrl.Result{}) {
+		return result, nil
+	}
+
+	return ctrl.Result{}, nil
 }
