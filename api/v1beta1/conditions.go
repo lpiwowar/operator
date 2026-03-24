@@ -24,10 +24,6 @@ const (
 	// is configured and operational
 	OpenStackLightspeedReadyCondition condition.Type = "OpenStackLightspeedReady"
 
-	// OpenShift Lightspeed Operator Status=True condition which indicates if OpenShift Lightspeed is installed and
-	// operational and it can be used by OpenStack Lightspeed operator.
-	OpenShiftLightspeedOperatorReadyCondition condition.Type = "OpenShiftLightspeedOperatorReady"
-
 	// OCPRAGCondition Status=True condition which indicates the OCP RAG version resolution status
 	OCPRAGCondition condition.Type = "OCPRAGReady"
 )
@@ -39,15 +35,6 @@ const (
 
 	// OpenStackLightspeedReadyMessage
 	OpenStackLightspeedReadyMessage = "OpenStack Lightspeed created"
-
-	// OpenStackLightspeedWaitingVectorDBMessage
-	OpenStackLightspeedWaitingVectorDBMessage = "Waiting for OpenStackLightspeed vector DB pod to become ready"
-
-	// OpenShiftLightspeedOperatorWaiting
-	OpenShiftLightspeedOperatorWaiting = "Waiting for the OpenShift Lightspeed operator to deploy."
-
-	// OpenShiftLightspeedOperatorReady
-	OpenShiftLightspeedOperatorReady = "OpenShift Lightspeed operator is ready."
 
 	// OCPRAGDisabledMessage
 	OCPRAGDisabledMessage = "OCP RAG is disabled"

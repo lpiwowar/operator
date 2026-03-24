@@ -19,12 +19,11 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/condition"
 	common_helper "github.com/openstack-k8s-operators/lib-common/modules/common/helper"
-	operatorsv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
 	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
 	uns "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -56,14 +55,13 @@ func (r *OpenStackLightspeedReconciler) GetLogger(ctx context.Context) logr.Logg
 // +kubebuilder:rbac:groups=lightspeed.openstack.org,resources=openstacklightspeeds,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=lightspeed.openstack.org,resources=openstacklightspeeds/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=lightspeed.openstack.org,resources=openstacklightspeeds/finalizers,verbs=update
-// +kubebuilder:rbac:groups=ols.openshift.io,resources=olsconfigs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=ols.openshift.io,resources=olsconfigs/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=ols.openshift.io,resources=olsconfigs/finalizers,verbs=update
-// +kubebuilder:rbac:groups=operators.coreos.com,resources=clusterserviceversions,verbs=get;list;watch
-// +kubebuilder:rbac:groups=operators.coreos.com,resources=clusterserviceversions,namespace=openshift-lightspeed,verbs=update;patch;delete
-// +kubebuilder:rbac:groups=operators.coreos.com,resources=subscriptions,namespace=openshift-lightspeed,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=operators.coreos.com,resources=installplans,namespace=openshift-lightspeed,verbs=get;list;watch;update;delete
 // +kubebuilder:rbac:groups=config.openshift.io,resources=clusterversions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services;configmaps;secrets;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors;prometheusrules,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -162,97 +160,64 @@ func (r *OpenStackLightspeedReconciler) Reconcile(ctx context.Context, req ctrl.
 		instance.Spec.MaxTokensForResponse = apiv1beta1.OpenStackLightspeedDefaultValues.MaxTokensForResponse
 	}
 
-	// Ensure a compatible version of the OpenShift Lightspeed Operator is running in the cluster.
-	// This checks if the correct OLS Operator version is present and installs it if necessary.
-	isOLSOperatorInstalled, err := EnsureOLSOperatorInstalled(ctx, helper, instance)
-	if err != nil {
+	// Build LCore config from OpenStackLightspeed instance
+	lcoreConfig := BuildLCoreConfig(instance, instance.Status.ActiveOCPRAGVersion)
+
+	// Create reconciler adapter
+	adapter := NewReconcilerAdapter(r.Client, r.Scheme, Log, instance)
+
+	// Phase 1: Reconcile Postgres resources (ConfigMap, Secrets, NetworkPolicy)
+	if err := ReconcilePostgresResources(adapter, ctx, lcoreConfig); err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
-			apiv1beta1.OpenShiftLightspeedOperatorReadyCondition,
+			apiv1beta1.OpenStackLightspeedReadyCondition,
 			condition.ErrorReason,
 			condition.SeverityWarning,
 			condition.DeploymentReadyErrorMessage,
 			err.Error(),
 		))
-
-		return ctrl.Result{}, nil
-	} else if !isOLSOperatorInstalled {
-		instance.Status.Conditions.Set(condition.FalseCondition(
-			apiv1beta1.OpenShiftLightspeedOperatorReadyCondition,
-			condition.RequestedReason,
-			condition.SeverityInfo,
-			apiv1beta1.OpenShiftLightspeedOperatorWaiting,
-		))
-
-		// In this branch we know that the
-		return ctrl.Result{Requeue: true, RequeueAfter: 10 * time.Second}, nil
+		return ctrl.Result{}, err
 	}
 
-	// Mark the OpenShift Lightspeed Operator as ready in the status conditions.
-	instance.Status.Conditions.MarkTrue(
-		apiv1beta1.OpenShiftLightspeedOperatorReadyCondition,
-		apiv1beta1.OpenShiftLightspeedOperatorReady,
-	)
-
-	// NOTE: We cannot consume the OLSConfig definition directly from the OLS operator's code due to
-	// a conflict in Go versions. When this comment was written, the min. required Go version for
-	// openstack-operator was 1.21 whereas OLS operator required at least Go version 1.23. Once the
-	// Go versions catch up with each other we should consider consuming OLSConfig directly from OLS
-	// operator and updating this code and any subsequent code that consumes this structure.
-	olsConfig := uns.Unstructured{}
-	olsConfigGVK := schema.GroupVersionKind{
-		Group:   "ols.openshift.io",
-		Version: "v1alpha1",
-		Kind:    "OLSConfig",
-	}
-
-	olsConfig.SetGroupVersionKind(olsConfigGVK)
-	olsConfig.SetName(OLSConfigName)
-
-	_, err = controllerutil.CreateOrPatch(ctx, r.Client, &olsConfig, func() error {
-		// Check if the OpenStackLightspeed instance that is being processed owns the OLSConfig. If
-		// it is owned by other OpenStackLightspeed instance stop the reconciliation.
-		olsConfigLabels := olsConfig.GetLabels()
-		ownerLabel := ""
-		if val, ok := olsConfigLabels[OpenStackLightspeedOwnerIDLabel]; ok {
-			ownerLabel = val
-		}
-
-		if ownerLabel != "" && ownerLabel != string(instance.GetObjectMeta().GetUID()) {
-			return fmt.Errorf("OLSConfig is managed by different OpenStackLightspeed instance")
-		}
-
-		err = PatchOLSConfig(helper, instance, &olsConfig)
-		if err != nil {
-			return err
-		}
-
-		return nil
-	})
-	if err != nil {
+	// Phase 2: Reconcile Postgres deployment (Deployment, Service)
+	if err := ReconcilePostgresDeployment(adapter, ctx, lcoreConfig); err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			apiv1beta1.OpenStackLightspeedReadyCondition,
 			condition.ErrorReason,
 			condition.SeverityWarning,
 			condition.DeploymentReadyErrorMessage,
-			err.Error()))
+			err.Error(),
+		))
 		return ctrl.Result{}, err
 	}
 
-	OLSConfigReady, err := IsOLSConfigReady(ctx, helper)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	if OLSConfigReady {
-		instance.Status.Conditions.MarkTrue(
+	// Phase 3: Reconcile LCore resources (ServiceAccount, RBAC, ConfigMaps, NetworkPolicy, Secret)
+	if err := ReconcileLCoreResources(adapter, ctx, lcoreConfig); err != nil {
+		instance.Status.Conditions.Set(condition.FalseCondition(
 			apiv1beta1.OpenStackLightspeedReadyCondition,
-			apiv1beta1.OpenStackLightspeedReadyMessage,
-		)
-		Log.Info("OLSConfig is ready!")
-	} else {
-		Log.Info("OLSConfig is not ready yet. Waiting...")
-		return ctrl.Result{RequeueAfter: time.Second * time.Duration(5)}, nil
+			condition.ErrorReason,
+			condition.SeverityWarning,
+			condition.DeploymentReadyErrorMessage,
+			err.Error(),
+		))
+		return ctrl.Result{}, err
 	}
+
+	// Phase 4: Reconcile LCore deployment (Deployment, Service, TLS, monitoring)
+	if err := ReconcileLCoreDeployment(adapter, ctx, lcoreConfig); err != nil {
+		instance.Status.Conditions.Set(condition.FalseCondition(
+			apiv1beta1.OpenStackLightspeedReadyCondition,
+			condition.ErrorReason,
+			condition.SeverityWarning,
+			condition.DeploymentReadyErrorMessage,
+			err.Error(),
+		))
+		return ctrl.Result{}, err
+	}
+
+	instance.Status.Conditions.MarkTrue(
+		apiv1beta1.OpenStackLightspeedReadyCondition,
+		apiv1beta1.OpenStackLightspeedReadyMessage,
+	)
 
 	Log.Info("OpenStackLightspeed Reconciled successfully")
 	return ctrl.Result{}, nil
@@ -346,7 +311,9 @@ func (r *OpenStackLightspeedReconciler) resolveOCPVersion(
 	return activeVersion
 }
 
-// reconcileDelete reconciles the deletion of OpenStackLightspeed instance
+// reconcileDelete reconciles the deletion of OpenStackLightspeed instance.
+// Namespace-scoped resources are cleaned up via owner references.
+// Cluster-scoped resources (ClusterRole, ClusterRoleBinding) are cleaned up explicitly.
 func (r *OpenStackLightspeedReconciler) reconcileDelete(
 	ctx context.Context,
 	helper *common_helper.Helper,
@@ -355,20 +322,9 @@ func (r *OpenStackLightspeedReconciler) reconcileDelete(
 	Log := r.GetLogger(ctx)
 	Log.Info("OpenStackLightspeed Reconciling Delete")
 
-	isRemoved, err := RemoveOLSConfig(ctx, helper, instance)
-	if err != nil {
-		return ctrl.Result{}, err
-	} else if !isRemoved {
-		Log.Info("OLSConfig removal in progress ...")
-		return ctrl.Result{RequeueAfter: time.Second * 10}, nil
-	}
-
-	isUninstalled, err := UninstallInstanceOwnedOLSOperator(ctx, helper, instance)
-	if err != nil {
-		return ctrl.Result{}, err
-	} else if !isUninstalled {
-		Log.Info("OLS Operator uninstallation in progress ...")
-		return ctrl.Result{RequeueAfter: time.Second * 10}, nil
+	// Clean up cluster-scoped resources that aren't garbage-collected via owner references
+	if err := cleanupClusterScopedResources(ctx, r.Client, Log); err != nil {
+		Log.Error(err, "Failed to clean up cluster-scoped resources")
 	}
 
 	controllerutil.RemoveFinalizer(instance, helper.GetFinalizer())
@@ -390,13 +346,7 @@ func (r *OpenStackLightspeedReconciler) SetupWithManager(mgr ctrl.Manager) error
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1beta1.OpenStackLightspeed{}).
-		Owns(&operatorsv1alpha1.ClusterServiceVersion{}).
-		Owns(&operatorsv1alpha1.Subscription{}).
-		Watches(
-			&operatorsv1alpha1.InstallPlan{},
-			handler.EnqueueRequestsFromMapFunc(r.NotifyAllOpenStackLightspeeds),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
-		).
+		Owns(&appsv1.Deployment{}).
 		Watches(
 			clusterVersion,
 			handler.EnqueueRequestsFromMapFunc(r.NotifyAllOpenStackLightspeeds),

@@ -83,16 +83,6 @@ type OpenStackLightspeedCore struct {
 	MaxTokensForResponse int `json:"maxTokensForResponse,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default="openshift-marketplace"
-	// Namespace where the CatalogSource containing the OLS operator is located
-	CatalogSourceNamespace string `json:"catalogSourceNamespace"`
-
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:default="redhat-operators"
-	// Name of the CatalogSource that contains the OLS Operator
-	CatalogSourceName string `json:"catalogSourceName"`
-
-	// +kubebuilder:validation:Optional
 	// Project ID for LLM providers that require it (e.g., WatsonX)
 	LLMProjectID string `json:"llmProjectID,omitempty"`
 
@@ -131,10 +121,9 @@ type OpenStackLightspeedStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.conditions[0].status",description="Status"
 // +kubebuilder:printcolumn:name="Message",type="string",JSONPath=".status.conditions[0].message",description="Message"
-// +operator-sdk:csv:customresourcedefinitions:resources={{OLSConfig,v1alpha1,cluster}}
-// +operator-sdk:csv:customresourcedefinitions:resources={{Subscription,v1alpha1}}
-// +operator-sdk:csv:customresourcedefinitions:resources={{ClusterServiceVersion,v1alpha1}}
-// +operator-sdk:csv:customresourcedefinitions:resources={{InstallPlan,v1alpha}}
+// +operator-sdk:csv:customresourcedefinitions:resources={{Deployment,v1}}
+// +operator-sdk:csv:customresourcedefinitions:resources={{Service,v1}}
+// +operator-sdk:csv:customresourcedefinitions:resources={{ConfigMap,v1}}
 
 // OpenStackLightspeed is the Schema for the openstacklightspeeds API
 type OpenStackLightspeed struct {
