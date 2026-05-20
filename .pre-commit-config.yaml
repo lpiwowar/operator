@@ -7,3 +7,9 @@ repos:
         entry: make
         args: ['lint']
         pass_filenames: false
+      - id: bashate
+        name: bashate
+        language: system
+        entry: bashate
+        args: ['--max-line-length', '120']
+        types: [shell]

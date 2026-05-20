@@ -5,8 +5,8 @@
 set -ex
 
 if [ -z "${OUTPUT_DIR}" ]; then
-  echo "Please set OPERATOR_DIR"
-  exit 1
+    echo "Please set OPERATOR_DIR"
+    exit 1
 fi
 
 IMAGE_LOCATION=$1

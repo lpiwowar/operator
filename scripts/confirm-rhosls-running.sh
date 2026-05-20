@@ -1,7 +1,9 @@
 #!/bin/bash
 
 while true; do
-    csv=$(oc get subscription openstack-lightspeed-operator -n openstack-lightspeed -o jsonpath='{.status.installedCSV}' 2>/dev/null)
+    csv=$(oc get subscription openstack-lightspeed-operator \
+        -n openstack-lightspeed \
+        -o jsonpath='{.status.installedCSV}' 2>/dev/null)
     if [ -n "$csv" ]; then
         echo "Found installedCSV: $csv"
         break

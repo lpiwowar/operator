@@ -4,8 +4,8 @@
 set -ex
 
 if [ -z "${OUTPUT_DIR}" ]; then
-  echo "Please set OPERATOR_DIR"
-  exit 1
+    echo "Please set OPERATOR_DIR"
+    exit 1
 fi
 
 CATALOG=${1:-openstack-lightspeed-catalog}
@@ -33,14 +33,16 @@ spec:
 EOF
 
 for i in $(seq 1 20); do
-  CSV_VERSION=$(oc get --ignore-not-found=true packagemanifest openstack-lightspeed-operator -o go-template="{{range .status.channels}}{{if eq .name \"${CHANNEL}\"}}{{.currentCSV}}{{\"\n\"}}{{end}}{{end}}")
-  if [ -n "${CSV_VERSION}" ]; then
-    break
-  fi
-  sleep 2
+    GO_TMPL="{{range .status.channels}}{{if eq .name \"${CHANNEL}\"}}{{.currentCSV}}{{\"\\n\"}}{{end}}{{end}}"
+    CSV_VERSION=$(oc get --ignore-not-found=true \
+        packagemanifest openstack-lightspeed-operator -o go-template="${GO_TMPL}")
+    if [ -n "${CSV_VERSION}" ]; then
+        break
+    fi
+    sleep 2
 done
 if [ -z "${CSV_VERSION}" ]; then
-  exit 1
+    exit 1
 fi
 
 cat > "${DEST_DIR}/subscription.yaml" <<EOF
