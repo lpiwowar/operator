@@ -47,8 +47,13 @@ const (
 	OpenStackLightspeedAppCertsMountRoot = "/etc/certs"
 	OpenStackLightspeedCAConfigMap       = "openshift-service-ca.crt"
 	OpenShiftCAVolumeName                = "openshift-ca"
-	AdditionalCAVolumeName               = "additional-ca"
-	AdditionalCACertFile                 = "cert.crt"
+
+	CombinedCABundleConfigMapName = "openstack-lightspeed-combined-ca-bundle"
+	CombinedCABundleKey           = "tls-ca-bundle.pem"
+	CombinedCABundleVolumeName    = "combined-ca-bundle"
+	CombinedCABundleMountPath     = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+	DownstreamTLSCABundlePath     = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+	UpstreamTLSCABundlePath       = "/etc/ssl/certs/ca-certificates.crt"
 
 	// Postgres
 	PostgresCAVolume                             = "cm-olspostgresca"
@@ -176,6 +181,7 @@ const (
 	VectorDBScriptsConfigMapVersionAnnotation    = "ols.openshift.io/vector-db-scripts-configmap-version"
 	LlamaStackConfigMapResourceVersionAnnotation = "ols.openshift.io/llamastack-configmap-version"
 	LCoreConfigMapResourceVersionAnnotation      = "ols.openshift.io/lcore-configmap-version"
+	CombinedCABundleConfigMapVersionAnnotation   = "ols.openshift.io/combined-ca-bundle-configmap-version"
 
 	// Volume Permissions
 	// These constants define file permissions for volumes mounted in containers.

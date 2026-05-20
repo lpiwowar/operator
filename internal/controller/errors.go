@@ -36,6 +36,10 @@ var (
 	ErrCreateLlamaStackConfigMap    = errors.New("failed to create Llama Stack configmap")
 	ErrGenerateLlamaStackConfigMap  = errors.New("failed to generate Llama Stack configmap")
 	ErrCreateExporterConfigMap      = errors.New("failed to create exporter configmap")
+	ErrReadSystemCABundle           = errors.New("failed to read system CA bundle")
+	ErrParseSystemCABundle          = errors.New("failed to parse system CA bundle")
+	ErrParseUserCA                  = errors.New("failed to parse user CA certificate")
+	ErrCreateCombinedCABundle       = errors.New("failed to create combined CA bundle configmap")
 
 	// Postgres Errors
 	ErrCreatePostgresDeployment      = errors.New("failed to create Postgres deployment")

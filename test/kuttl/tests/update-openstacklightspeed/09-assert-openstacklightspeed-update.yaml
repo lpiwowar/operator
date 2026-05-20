@@ -84,6 +84,14 @@ metadata:
   name: lightspeed-app-server
   namespace: openstack-lightspeed
 
+# Combined CA bundle ConfigMap
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openstack-lightspeed-combined-ca-bundle
+  namespace: openstack-lightspeed
+
 # Vector DB init containers scripts
 ---
 apiVersion: v1

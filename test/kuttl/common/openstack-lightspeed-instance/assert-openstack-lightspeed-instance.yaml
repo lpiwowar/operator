@@ -120,6 +120,12 @@ metadata:
   namespace: openstack-lightspeed
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openstack-lightspeed-combined-ca-bundle
+  namespace: openstack-lightspeed
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: lightspeed-app-server

@@ -1,0 +1,40 @@
+##############################################################################
+#    Assert that the operator created the combined CA bundle ConfigMap        #
+#    and that the deployment mounts it correctly in all containers            #
+##############################################################################
+
+# Verify the combined CA bundle ConfigMap exists with the expected key
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openstack-lightspeed-combined-ca-bundle
+  namespace: openstack-lightspeed
+
+# Verify the deployment has the combined-ca-bundle volume and mounts
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lightspeed-stack-deployment
+  namespace: openstack-lightspeed
+spec:
+  template:
+    spec:
+      volumes:
+        - name: combined-ca-bundle
+          configMap:
+            name: openstack-lightspeed-combined-ca-bundle
+      containers:
+        - name: llama-stack
+          volumeMounts:
+            - name: combined-ca-bundle
+              mountPath: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+              subPath: tls-ca-bundle.pem
+              readOnly: true
+        - name: lightspeed-service-api
+          volumeMounts:
+            - name: combined-ca-bundle
+              mountPath: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+              subPath: tls-ca-bundle.pem
+              readOnly: true

@@ -47,7 +47,7 @@ func buildLCorePodTemplateSpec(h *common_helper.Helper, ctx context.Context, ins
 	addOpenShiftCAVolumesAndMounts(&volumes, &sharedMounts, VolumeDefaultMode)
 	addOpenShiftRootCAVolumesAndMounts(&volumes, &sharedMounts, VolumeDefaultMode)
 	addPostgresCAVolumesAndMounts(&volumes, &sharedMounts)
-	addUserCAVolumesAndMounts(&volumes, &sharedMounts, instance, VolumeDefaultMode)
+	addCombinedCABundleVolumesAndMounts(&volumes, &sharedMounts)
 	addVectorDBDataVolumesAndMounts(&volumes, &sharedMounts)
 
 	// Llama cache emptydir
@@ -439,47 +439,27 @@ func addDataCollectorVolumes(volumes *[]corev1.Volume, volumeDefaultMode int32) 
 	})
 }
 
-// addUserCAVolumesAndMounts adds user-provided additional CA certificate volume and mount
-// if instance.Spec.TLSCACertBundle is set.
-func addUserCAVolumesAndMounts(volumes *[]corev1.Volume, mounts *[]corev1.VolumeMount, instance *apiv1beta1.OpenStackLightspeed, volumeDefaultMode int32) {
-	if instance.Spec.TLSCACertBundle == "" {
-		return
-	}
+// addCombinedCABundleVolumesAndMounts adds the combined CA bundle volume and mount.
+// The combined bundle is always present (created by reconcileCombinedCABundleConfigMap)
+// and mounted at the RHEL system CA path so applications find it automatically.
+func addCombinedCABundleVolumesAndMounts(volumes *[]corev1.Volume, mounts *[]corev1.VolumeMount) {
 	*volumes = append(*volumes, corev1.Volume{
-		Name: AdditionalCAVolumeName,
+		Name: CombinedCABundleVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: instance.Spec.TLSCACertBundle,
+					Name: CombinedCABundleConfigMapName,
 				},
-				DefaultMode: toPtr(volumeDefaultMode),
+				DefaultMode: toPtr(VolumeDefaultMode),
 			},
 		},
 	})
 	*mounts = append(*mounts, corev1.VolumeMount{
-		Name:      AdditionalCAVolumeName,
-		MountPath: OpenStackLightspeedAppCertsMountRoot + "/additional-ca",
+		Name:      CombinedCABundleVolumeName,
+		MountPath: CombinedCABundleMountPath,
+		SubPath:   CombinedCABundleKey,
 		ReadOnly:  true,
 	})
-}
-
-// buildAdditionalCAEnvVars returns REQUESTS_CA_BUNDLE and SSL_CERT_FILE env vars
-// pointing to the additional CA cert file, if an additional CA configmap is configured.
-func buildAdditionalCAEnvVars(instance *apiv1beta1.OpenStackLightspeed) []corev1.EnvVar {
-	if instance.Spec.TLSCACertBundle == "" {
-		return nil
-	}
-	certPath := OpenStackLightspeedAppCertsMountRoot + "/additional-ca/" + AdditionalCACertFile
-	return []corev1.EnvVar{
-		{
-			Name:  "REQUESTS_CA_BUNDLE",
-			Value: certPath,
-		},
-		{
-			Name:  "SSL_CERT_FILE",
-			Value: certPath,
-		},
-	}
 }
 
 // buildLlamaStackEnvVars builds environment variables for llama-stack,
@@ -597,9 +577,6 @@ func buildLlamaStackEnvVars(h *common_helper.Helper, ctx context.Context, instan
 		Value: VectorDBVolumeMountPath,
 	})
 
-	// Additional CA env vars
-	envVars = append(envVars, buildAdditionalCAEnvVars(instance)...)
-
 	return envVars, nil
 }
 
@@ -690,6 +667,15 @@ func buildConfigMapAnnotations(h *common_helper.Helper, ctx context.Context) (ma
 		}
 	} else {
 		annotations[VectorDBScriptsConfigMapVersionAnnotation] = vectorDBScriptsVersion
+	}
+
+	combinedCAVersion, err := getConfigMapResourceVersion(ctx, h, CombinedCABundleConfigMapName, h.GetBeforeObject().GetNamespace())
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get combined CA bundle configmap resource version: %w", err)
+		}
+	} else {
+		annotations[CombinedCABundleConfigMapVersionAnnotation] = combinedCAVersion
 	}
 
 	return annotations, nil
